@@ -1,0 +1,188 @@
+CREATE TABLE public.payments (
+    payment_id     SERIAL PRIMARY KEY,
+    customer_id    INTEGER NOT NULL,
+    amount         NUMERIC(12,2) NOT NULL,
+    payment_status VARCHAR(30) NOT NULL,
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO public.payments (customer_id, amount, payment_status)
+VALUES
+    (101, 100.00, 'PENDING'),
+    (102, 200.00, 'PENDING'),
+    (103, 300.00, 'COMPLETED'),
+    (104, 400.00, 'COMPLETED'),
+    (105, 500.00, 'FAILED');
+
+GRANT SELECT ON TABLE public.payments TO dbz;
+
+SELECT payment_id, customer_id, amount, payment_status
+FROM public.payments
+ORDER BY payment_id;
+
+CREATE PUBLICATION pub_exam
+FOR TABLE public.payments;
+
+
+Verify publication:
+
+SELECT pubname, puballtables
+FROM pg_publication;
+
+SELECT * FROM pg_publication_tables
+WHERE pubname = 'pub_exam';
+
+
+Correct pg-source.json
+{
+  "name": "pg-source",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+
+    "database.hostname": "postgres-source",
+    "database.port": "5432",
+    "database.user": "dbz",
+    "database.password": "dbz",
+    "database.dbname": "sourcedb",
+
+    "topic.prefix": "pg",
+    "plugin.name": "pgoutput",
+
+    "publication.name": "pub_exam",
+    "table.include.list": "public.payments",
+
+    "slot.name": "dbz_slot_exam",
+    "snapshot.mode": "initial",
+
+    "heartbeat.interval.ms": "5000",
+    "heartbeat.action.query":
+      "INSERT INTO debezium_info.heartbeat(ts) VALUES (now());"
+  }
+}
+
+Create connector:
+
+curl -X POST http://localhost:8083/connectors -H "Content-Type: application/json" -d @pg-source.json
+
+Verify status:
+
+curl http://localhost:8083/connectors/pg-source/status
+
+Verify Kafka topic:
+
+docker exec -it bigdataexam-kafka-1 kafka-topics --bootstrap-server kafka:9092 --list
+
+
+CREATE SCHEMA IF NOT EXISTS debezium_info;
+
+CREATE TABLE IF NOT EXISTS debezium_info.heartbeat (
+    id SERIAL PRIMARY KEY,
+    date_load TIMESTAMPTZ DEFAULT NOW()
+);
+
+GRANT USAGE ON SCHEMA debezium_info TO dbz;
+GRANT INSERT ON TABLE debezium_info.heartbeat TO dbz;
+GRANT USAGE ON SEQUENCE debezium_info.heartbeat_id_seq TO dbz;
+
+Verify in source DB//word:
+
+SELECT * FROM debezium_info.heartbeat
+ORDER BY ts DESC;
+
+pg-source sheqmna
+
+{
+  "name": "pg-source",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+
+    "database.hostname": "postgres-source",
+    "database.port": "5432",
+    "database.user": "dbz",
+    "database.password": "dbz",
+    "database.dbname": "sourcedb",
+
+    "topic.prefix": "pg",
+    "plugin.name": "pgoutput",
+
+    "publication.name": "pub_exam",
+    "publication.autocreate.mode": "disabled",
+    "table.include.list": "public.payments",
+
+    "slot.name": "dbz_slot_exam",
+    "snapshot.mode": "initial",
+    "tombstones.on.delete": "true",
+
+    "heartbeat.interval.ms": "5000",
+    "heartbeat.action.query": "INSERT INTO debezium_info.heartbeat (date_load) VALUES (NOW());",
+
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "true",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "true"
+  }
+}
+
+
+curl -X POST http://localhost:8083/connectors -H "Content-Type: application/json" -d @pg-source.json
+curl http://localhost:8083/connectors/pg-source/status
+
+bazistvis
+GRANT USAGE, CREATE ON SCHEMA public TO sink;
+
+Correct pg-jdbc-sink-payments.json
+{
+  "name": "jdbc-sink-payments",
+  "config": {
+    "connector.class": "io.debezium.connector.jdbc.JdbcSinkConnector",
+    "tasks.max": "1",
+
+    "topics": "pg.public.payments",
+
+    "connection.url": "jdbc:postgresql://postgres-dest:5432/destdb",
+    "connection.username": "sink",
+    "connection.password": "sink",
+
+    "auto.create": "true",
+    "auto.evolve": "true",
+
+    "insert.mode": "upsert",
+    "delete.enabled": "true",
+
+    "primary.key.mode": "record_key",
+    "primary.key.fields": "payment_id",
+
+    "transforms": "unwrap",
+    "transforms.unwrap.type":
+      "io.debezium.transforms.ExtractNewRecordState",
+    "transforms.unwrap.drop.tombstones": "false"
+    "transforms.unwrap.delete.tombstone.handling.mode": "tombstone",
+  }
+}
+
+curl -X POST http://localhost:8083/connectors -H "Content-Type: application/json" -d @pg-jdbc-sink-payments.json
+curl http://localhost:8083/connectors/jdbc-sink-payments/status
+
+
+docker exec -it bigdata_class02-kafka-1 kafka-console-consumer --bootstrap-server kafka:9092 --topic pg.public.payments --property print.key=true
+
+
+-- INSERT — ახალი გადახდა
+INSERT INTO public.payments (customer_id, amount, payment_status)
+VALUES (106, 600.00, 'PENDING')
+RETURNING payment_id, customer_id, amount, payment_status;
+
+-- UPDATE — არსებული გადახდის თანხისა და სტატუსის ცვლილება
+UPDATE public.payments
+SET amount = 250.00,
+    payment_status = 'COMPLETED'
+WHERE customer_id = 102
+RETURNING payment_id, customer_id, amount, payment_status;
+
+
+-- DELETE — არსებული გადახდის წაშლა
+DELETE FROM public.payments
+WHERE customer_id = 103
+RETURNING payment_id, customer_id;
